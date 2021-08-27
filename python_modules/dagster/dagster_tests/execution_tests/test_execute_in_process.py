@@ -3,8 +3,12 @@ import re
 import pytest
 from dagster import (
     DagsterInvalidDefinitionError,
+    DagsterInvariantViolationError,
+    DynamicOut,
     DynamicOutput,
     DynamicOutputDefinition,
+    Out,
+    op,
     resource,
     solid,
 )
@@ -30,7 +34,39 @@ def test_execute_solid():
     result = execute_in_process(emit_one, output_capturing_enabled=True)
 
     assert result.success
-    assert result.output_values["result"] == 1
+    assert result.output_value() == 1
+
+
+def test_output_values():
+    @op(out={"a": Out(), "b": Out()})
+    def two_outs():
+        return 1, 2
+
+    @graph
+    def a():
+        two_outs()
+
+    result = a.execute_in_process()
+
+    assert result.success
+    assert result.result_for_node("two_outs").output_values["a"] == 1
+    assert result.result_for_node("two_outs").output_values["b"] == 2
+
+
+def test_dynamic_output_values():
+    @op(out=DynamicOut())
+    def two_outs():
+        yield DynamicOutput(1, "a")
+        yield DynamicOutput(2, "b")
+
+    @graph
+    def a():
+        two_outs()
+
+    result = a.execute_in_process()
+
+    assert result.success
+    assert result.result_for_node("two_outs").output_value() == {"a": 1, "b": 2}
 
 
 def test_execute_graph():
@@ -59,6 +95,18 @@ def test_execute_graph():
         result.result_for_node("emit_two").result_for_node("emit_one_2").output_values["result"]
         == 1
     )
+
+
+def test_output_capturing_diabled():
+    emit_one, add = get_solids()
+
+    @graph
+    def emit_two():
+        return add(emit_one(), emit_one())
+
+    result = execute_in_process(emit_two, output_capturing_enabled=False)
+    with pytest.raises(DagsterInvariantViolationError):
+        result.result_for_node("add").output_value()
 
 
 def test_execute_solid_with_inputs():
